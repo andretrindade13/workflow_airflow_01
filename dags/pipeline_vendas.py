@@ -6,6 +6,7 @@ from airflow.exceptions import AirflowException
 import pendulum
 import pandas as pd
 from validadores import ValidarCategoriasOperator, ValidarMetricasProdutosOperator
+from airflow.providers.postgres.hooks.postgres import PostgresHook
 
 def alert_failure(context):
     task_id = context.get('task_instance').task_id
@@ -120,19 +121,46 @@ def pipeline_shopbrasil():
             return metricas
 
         metrics_results = calculate_category_metrics.expand(category_id=categories)
-        
-        # Validar métricas calculadas
-        validar_metricas = ValidarMetricasProdutosOperator(
-            task_id='validar_metricas',
-            metricas=metrics_results
-        )
-        
-        metrics_results >> validar_metricas
         return metrics_results
 
+    @task_group(group_id="load_metrics")
+    def tg_load_metrics(metrics):
+
+        @task(
+            retries=2,
+            retry_delay=datetime.timedelta(seconds=10),
+            retry_exponential_backoff=True,
+            on_failure_callback=alert_failure,
+            on_retry_callback=alert_retry,
+            on_success_callback=alertar_sucesso
+        )
+        def salvar_no_banco(metricas_list):
+            hook = PostgresHook(postgres_conn_id='postgres_default')
+    
+            for metrica in metricas_list:
+                sql = """
+                    INSERT INTO analise_produtos (categoria, preco_medio, preco_minimo, preco_maximo, quantidade_produtos)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (categoria) 
+                    DO UPDATE SET 
+                        preco_medio = EXCLUDED.preco_medio,
+                        preco_minimo = EXCLUDED.preco_minimo,
+                        preco_maximo = EXCLUDED.preco_maximo,
+                        quantidade_produtos = EXCLUDED.quantidade_produtos;
+                """
+                hook.run(sql, parameters=(
+                    metrica['categoria'], 
+                    metrica['preco_medio'], 
+                    metrica['preco_minimo'], 
+                    metrica['preco_maximo'], 
+                    metrica['quantidade_produtos']
+                ))
+
+        return salvar_no_banco(metricas_list=metrics)
     # Fluxo principal da DAG
     categories = tg_ingest()
     metrics = tg_analisis(categories)
+    tg_load_metrics(metrics)
 
 # --- INSTANCIAÇÃO DA DAG (MUITO IMPORTANTE) ---
 # Sem essa linha final, o Airflow não enxerga a DAG
