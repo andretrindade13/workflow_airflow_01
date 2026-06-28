@@ -25,12 +25,18 @@ services:
     environment:
       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
       - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
+      - AIRFLOW__WEBSERVER__SECRET_KEY=c2014c27429624599182337a7b8e5c
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__LOGGING__REMOTE_LOGGING=False
+      - AIRFLOW__CORE__LOGGING_LEVEL=INFO
     depends_on:
       - postgres
     restart: always
 
   postgres:
     image: postgres:13
+    ports:
+      - "5432:5432"
     environment:
       - POSTGRES_USER=airflow
       - POSTGRES_PASSWORD=airflow

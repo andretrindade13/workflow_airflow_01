@@ -120,8 +120,8 @@ def pipeline_shopbrasil():
             logging.info(f"Métricas calculadas para {category_id}: {metricas}")
             return metricas
 
-        metrics_results = calculate_category_metrics.expand(category_id=categories)
-        return metrics_results
+        metrics_result = calculate_category_metrics.expand(category_id=categories)
+        return metrics_result
 
     @task_group(group_id="load_metrics")
     def tg_load_metrics(metrics):
@@ -135,26 +135,30 @@ def pipeline_shopbrasil():
             on_success_callback=alertar_sucesso
         )
         def salvar_no_banco(metricas_list):
-            hook = PostgresHook(postgres_conn_id='postgres_default')
-    
-            for metrica in metricas_list:
-                sql = """
-                    INSERT INTO analise_produtos (categoria, preco_medio, preco_minimo, preco_maximo, quantidade_produtos)
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (categoria) 
-                    DO UPDATE SET 
-                        preco_medio = EXCLUDED.preco_medio,
-                        preco_minimo = EXCLUDED.preco_minimo,
-                        preco_maximo = EXCLUDED.preco_maximo,
-                        quantidade_produtos = EXCLUDED.quantidade_produtos;
-                """
-                hook.run(sql, parameters=(
-                    metrica['categoria'], 
-                    metrica['preco_medio'], 
-                    metrica['preco_minimo'], 
-                    metrica['preco_maximo'], 
-                    metrica['quantidade_produtos']
-                ))
+            logging.info(f"lista de metricas {metricas_list}")
+            try:
+                hook = PostgresHook(postgres_conn_id='postgres_default')
+                for metrica in metricas_list:
+                    sql = """
+                        INSERT INTO analise_produtos (categoria, preco_medio, preco_minimo, preco_maximo, quantidade_produtos)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (categoria)
+                        DO UPDATE SET
+                            preco_medio = EXCLUDED.preco_medio,
+                            preco_minimo = EXCLUDED.preco_minimo,
+                            preco_maximo = EXCLUDED.preco_maximo,
+                            quantidade_produtos = EXCLUDED.quantidade_produtos;
+                    """
+                    hook.run(sql, parameters=(
+                        metrica['categoria'],
+                        metrica['preco_medio'],
+                        metrica['preco_minimo'],
+                        metrica['preco_maximo'],
+                        metrica['quantidade_produtos']
+                    ))
+            except Exception as e:
+                logging.error(f"FALHA CRÍTICA NO SQL: {str(e)}")
+                raise e
 
         return salvar_no_banco(metricas_list=metrics)
     # Fluxo principal da DAG
