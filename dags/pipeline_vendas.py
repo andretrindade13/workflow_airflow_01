@@ -5,6 +5,7 @@ from airflow.decorators import dag, task_group, task
 from airflow.exceptions import AirflowException
 import pendulum
 import pandas as pd
+from validadores import ValidarCategoriasOperator, ValidarMetricasProdutosOperator
 
 def alert_failure(context):
     task_id = context.get('task_instance').task_id
@@ -47,9 +48,8 @@ def pipeline_shopbrasil():
             
             try:
                 logging.info("Iniciando requisição na API...")
-                response = requests.get(url, timeout=10) # Corrigido: timeout minúsculo
-
-                response.raise_for_status() # Corrigido: raise_for_status
+                response = requests.get(url, timeout=10)
+                response.raise_for_status()
                 categories = response.json()
                 
                 logging.info(f"Carga de {len(categories)} categorias capturada com sucesso.")
@@ -60,21 +60,40 @@ def pipeline_shopbrasil():
                 logging.error(f"Erro na comunicação com a API: {str(err)}")
                 raise AirflowException(f"API indisponível. Forçando retentativa. Erro original: {err}")
 
-        # Chamada da task dentro do grupo
-        return get_categories_api()
+        categories = get_categories_api()
+        
+        # Validar categorias capturadas
+        validar_categorias = ValidarCategoriasOperator(
+            task_id='validar_categorias',
+            categorias=categories
+        )
+        
+        categories >> validar_categorias
+        return categories
     
     @task_group(group_id="analisis")
     def tg_analisis(categories):
         
-        @task(pool="ecommerce_pool")
+        @task(
+            pool="ecommerce_pool",
+            retries=2,
+            retry_delay=datetime.timedelta(seconds=10),
+            retry_exponential_backoff=True,
+            on_failure_callback=alert_failure,
+            on_retry_callback=alert_retry,
+            on_success_callback=alertar_sucesso
+        )
         def calculate_category_metrics(category_id):
-           
-            logging.info(f"Chamando APi para produtos de categoria {category_id}")
+            logging.info(f"Chamando API para produtos de categoria {category_id}")
             url = f"https://api.escuelajs.co/api/v1/categories/{category_id}/products"
 
-            response = requests.get(url, timeout=10)
-            response.raise_for_status()
-            products = response.json()
+            try:
+                response = requests.get(url, timeout=10)
+                response.raise_for_status()
+                products = response.json()
+            except requests.RequestException as err:
+                logging.error(f"Erro ao buscar produtos da categoria {category_id}: {str(err)}")
+                raise AirflowException(f"Falha ao buscar categoria {category_id}. Erro: {err}")
 
             logging.info("Iniciando análise das categorias...")    
             if not products:
@@ -101,6 +120,14 @@ def pipeline_shopbrasil():
             return metricas
 
         metrics_results = calculate_category_metrics.expand(category_id=categories)
+        
+        # Validar métricas calculadas
+        validar_metricas = ValidarMetricasProdutosOperator(
+            task_id='validar_metricas',
+            metricas=metrics_results
+        )
+        
+        metrics_results >> validar_metricas
         return metrics_results
 
     # Fluxo principal da DAG
